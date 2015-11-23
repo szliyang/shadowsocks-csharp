@@ -128,6 +128,7 @@
     <Compile Include="Controller\FileManager.cs" />
     <Compile Include="Controller\GFWListUpdater.cs" />
     <Compile Include="Controller\HttpProxy.cs" />
+    <Compile Include="Controller\HttpProxyRunner.cs" />
     <Compile Include="Controller\I18N.cs" />
     <Compile Include="Controller\Listener.cs" />
     <Compile Include="Controller\Logging.cs" />
@@ -146,6 +147,7 @@
     <Compile Include="Controller\PACServer.cs" />
     <Compile Include="Model\Server.cs" />
     <Compile Include="Model\Configuration.cs" />
+    <Compile Include="Obfs\Auth.cs" />
     <Compile Include="Obfs\HttpSimpleObfs.cs" />
     <Compile Include="Obfs\IObfs.cs" />
     <Compile Include="Obfs\ObfsBase.cs" />
@@ -166,7 +168,6 @@
       <DependentUpon>ConfigForm.cs</DependentUpon>
     </Compile>
     <Compile Include="Controller\Local.cs" />
-    <Compile Include="Controller\PolipoRunner.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Controller\ShadowsocksController.cs" />

@@ -625,12 +625,12 @@ namespace Shadowsocks.Model
             ret.server_port = server_port;
             ret.password = (string)password.Clone();
             ret.method = (string)method.Clone();
+            ret.protocol = protocol;
             ret.obfs = (string)obfs.Clone();
             ret.obfsparam = (string)obfsparam.Clone();
             ret.remarks_base64 = (string)remarks_base64.Clone();
             ret.enable = enable;
             ret.udp_over_tcp = udp_over_tcp;
-            ret.protocol = protocol;
             ret.obfs_udp = obfs_udp;
             ret.id = id;
             ret.protocoldata = protocoldata;
@@ -726,7 +726,7 @@ namespace Shadowsocks.Model
                     this.obfs = parts[parts.Length - 4];
                     if (param.Length > 0)
                     {
-                        this.obfsparam = param;
+                        this.obfsparam = Encoding.UTF8.GetString(System.Convert.FromBase64String(param.Replace('-', '+').Replace('_', '/')));
                     }
                 }
                 else if (parts.Length >= 3)

@@ -20,7 +20,7 @@ namespace Shadowsocks.Controller
         private Listener _listener;
         private PACServer _pacServer;
         private Configuration _config;
-        private PolipoRunner polipoRunner;
+        private HttpProxyRunner polipoRunner;
         private GFWListUpdater gfwListUpdater;
         private bool stopped = false;
 
@@ -173,7 +173,6 @@ namespace Shadowsocks.Controller
             _config.socks5User = config.socks5User;
             _config.socks5Pass = config.socks5Pass;
             _config.autoban = config.autoban;
-            SaveConfig(_config);
             foreach (Server s in missingServers)
             {
                 s.GetConnections().CloseAll();
@@ -299,7 +298,7 @@ namespace Shadowsocks.Controller
             parts = parts + server.method + ":" + server.password + "@" + server.server + ":" + server.server_port;
             if (server.obfs.Length > 0 && server.obfs != "plain" && server.obfsparam.Length > 0)
             {
-                parts += "/" + System.Convert.ToBase64String(Encoding.UTF8.GetBytes(server.obfsparam));
+                parts += "/" + System.Convert.ToBase64String(Encoding.UTF8.GetBytes(server.obfsparam)).Replace('+', '-').Replace('/', '_');
             }
             return parts;
         }
@@ -308,14 +307,14 @@ namespace Shadowsocks.Controller
         {
             Server server = GetCurrentServer();
             string parts = GetObfsPartOfSSLink(server);
-            string base64 = System.Convert.ToBase64String(Encoding.UTF8.GetBytes(parts));
+            string base64 = System.Convert.ToBase64String(Encoding.UTF8.GetBytes(parts)).Replace('+', '-').Replace('/', '_');
             return "ss://" + base64;
         }
 
         public string GetSSLinkForServer(Server server)
         {
             string parts = GetObfsPartOfSSLink(server);
-            string base64 = System.Convert.ToBase64String(Encoding.UTF8.GetBytes(parts));
+            string base64 = System.Convert.ToBase64String(Encoding.UTF8.GetBytes(parts)).Replace('+', '-').Replace('/', '_');
             return "ss://" + base64;
         }
 
@@ -323,7 +322,7 @@ namespace Shadowsocks.Controller
         {
             string remarks = server.remarks_base64;
             string parts = GetObfsPartOfSSLink(server) + "#" + remarks;
-            string base64 = System.Convert.ToBase64String(Encoding.UTF8.GetBytes(parts));
+            string base64 = System.Convert.ToBase64String(Encoding.UTF8.GetBytes(parts)).Replace('+', '-').Replace('/', '_');
             return "ss://" + base64;
         }
 
@@ -372,7 +371,7 @@ namespace Shadowsocks.Controller
 
             if (polipoRunner == null)
             {
-                polipoRunner = new PolipoRunner();
+                polipoRunner = new HttpProxyRunner();
             }
             if (_pacServer == null)
             {
@@ -401,6 +400,10 @@ namespace Shadowsocks.Controller
                     {
                         polipoRunner.Stop();
                         polipoRunner.Start(_config);
+                    }
+                    else if (_config.buildinHttpProxy)
+                    {
+                        polipoRunner.Stop();
                     }
                 }
                 else
