@@ -160,18 +160,18 @@ namespace Shadowsocks.Controller
             List<Server> missingServers = MergeConfiguration(_config, config.configs);
             _config.configs = config.configs;
             _config.index = config.index;
-            _config.buildinHttpProxy = config.buildinHttpProxy;
             _config.shareOverLan = config.shareOverLan;
             _config.localPort = config.localPort;
             _config.reconnectTimes = config.reconnectTimes;
             _config.random = config.random;
             _config.randomAlgorithm = config.randomAlgorithm;
             _config.TTL = config.TTL;
-            _config.socks5enable = config.socks5enable;
-            _config.socks5Host = config.socks5Host;
-            _config.socks5Port = config.socks5Port;
-            _config.socks5User = config.socks5User;
-            _config.socks5Pass = config.socks5Pass;
+            _config.proxyEnable = config.proxyEnable;
+            _config.proxyType = config.proxyType;
+            _config.proxyHost = config.proxyHost;
+            _config.proxyPort = config.proxyPort;
+            _config.proxyAuthUser = config.proxyAuthUser;
+            _config.proxyAuthPass = config.proxyAuthPass;
             _config.autoban = config.autoban;
             foreach (Server s in missingServers)
             {
@@ -401,10 +401,6 @@ namespace Shadowsocks.Controller
                         polipoRunner.Stop();
                         polipoRunner.Start(_config);
                     }
-                    else if (_config.buildinHttpProxy)
-                    {
-                        polipoRunner.Stop();
-                    }
                 }
                 else
                 {
@@ -421,10 +417,7 @@ namespace Shadowsocks.Controller
                     List<Listener.Service> services = new List<Listener.Service>();
                     services.Add(local);
                     services.Add(_pacServer);
-                    if (!_config.buildinHttpProxy)
-                    {
-                        services.Add(new PortForwarder(polipoRunner.RunningPort));
-                    }
+                    services.Add(new PortForwarder(polipoRunner.RunningPort));
                     _listener = new Listener(services);
                     _listener.Start(_config);
                 }

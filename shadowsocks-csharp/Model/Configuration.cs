@@ -223,15 +223,13 @@ namespace Shadowsocks.Model
         public int reconnectTimes;
         public int randomAlgorithm;
         public int TTL;
-        public bool socks5enable;
-        public string socks5Host;
-        public int socks5Port;
-        public string socks5User;
-        public string socks5Pass;
-        public string authUser;
-        public string authPass;
+        public bool proxyEnable;
+        public int proxyType;
+        public string proxyHost;
+        public int proxyPort;
+        public string proxyAuthUser;
+        public string proxyAuthPass;
         public bool autoban;
-        public bool buildinHttpProxy;
         private ServerSelectStrategy serverStrategy = new ServerSelectStrategy();
 
         private static string CONFIG_FILE = "gui-config.json";
