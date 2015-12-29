@@ -135,6 +135,14 @@ Cmd: 8
 
 namespace Shadowsocks.Controller
 {
+    public class ProtocolException : Exception
+    {
+        public ProtocolException(string info)
+            : base(info)
+        {
+
+        }
+    }
 
     class Local : Listener.Service
     {
@@ -182,6 +190,7 @@ namespace Shadowsocks.Controller
             handler.getCurrentServer = delegate (bool usingRandom, bool forceRandom) { return _config.GetCurrentServer(usingRandom, forceRandom); };
             handler.connection = socket;
             handler.reconnectTimesRemain = _config.reconnectTimes;
+            handler.forceRandom = _config.random;
 
             handler.server = _config.GetCurrentServer(true);
             if (_config.proxyEnable)
@@ -216,6 +225,142 @@ namespace Shadowsocks.Controller
         }
     }
 
+    class ProtocolResponseDetector
+    {
+        public enum Protocol
+        {
+            UNKONWN = -1,
+            NOTBEGIN = 0,
+            HTTP = 1,
+            TLS = 2,
+            SOCKS4 = 4,
+            SOCKS5 = 5,
+        }
+        protected Protocol protocol = Protocol.NOTBEGIN;
+        protected byte[] send_buffer = new byte[0];
+        protected byte[] recv_buffer = new byte[0];
+
+        public bool Pass
+        {
+            get; set;
+        }
+
+        public ProtocolResponseDetector()
+        {
+            Pass = false;
+        }
+
+        public void OnSend(byte[] send_data, int length)
+        {
+            if (protocol != Protocol.NOTBEGIN) return;
+            Array.Resize(ref send_buffer, send_buffer.Length + length);
+            Array.Copy(send_data, 0, send_buffer, send_buffer.Length - length, length);
+
+            if (send_buffer.Length < 2) return;
+
+            int head_size = Obfs.ObfsBase.GetHeadSize(send_buffer, send_buffer.Length);
+            if (send_buffer.Length - head_size < 0) return;
+            byte[] data = new byte[send_buffer.Length - head_size];
+            Array.Copy(send_buffer, head_size, data, 0, data.Length);
+
+            if (data.Length < 2) return;
+
+            if (data[0] == 5 && data[1] == 1 || data[0] == 4)
+            {
+                protocol = (Protocol)data[0];
+                return;
+            }
+
+            if (data.Length > 8)
+            {
+                if (data[0] == 22 && data[1] == 3)
+                {
+                    protocol = Protocol.TLS;
+                    return;
+                }
+                if (data[0] == 'G' && data[1] == 'E' && data[2] == 'T' && data[3] == ' '
+                    || data[0] == 'P' && data[1] == 'U' && data[2] == 'T' && data[3] == ' '
+                    || data[0] == 'H' && data[1] == 'E' && data[2] == 'A' && data[3] == 'D' && data[4] == ' '
+                    || data[0] == 'P' && data[1] == 'O' && data[2] == 'S' && data[3] == 'T' && data[4] == ' '
+                    || data[0] == 'C' && data[1] == 'O' && data[2] == 'N' && data[3] == 'N' && data[4] == 'E' && data[5] == 'C' && data[6] == 'T' && data[7] == ' '
+                    )
+                {
+                    protocol = Protocol.HTTP;
+                    return;
+                }
+            }
+            else
+            {
+                protocol = Protocol.UNKONWN;
+            }
+        }
+        public void OnRecv(byte[] recv_data, int length)
+        {
+            if (protocol == Protocol.UNKONWN || protocol == Protocol.NOTBEGIN) return;
+            Array.Resize(ref recv_buffer, recv_buffer.Length + length);
+            Array.Copy(recv_data, 0, recv_buffer, recv_buffer.Length - length, length);
+
+            if (recv_buffer.Length < 2) return;
+
+            if (protocol == Protocol.HTTP && recv_buffer.Length > 4)
+            {
+                if (recv_buffer[0] == 'H' && recv_buffer[1] == 'T' && recv_buffer[2] == 'T' && recv_buffer[3] == 'P')
+                {
+                    Finish();
+                    return;
+                }
+                else
+                {
+                    throw new ProtocolException("Wrong http response");
+                }
+            }
+            else if (protocol == Protocol.TLS && recv_buffer.Length > 4)
+            {
+                if (recv_buffer[0] == 22 && recv_buffer[1] == 3)
+                {
+                    Finish();
+                    return;
+                }
+                else
+                {
+                    throw new ProtocolException("Wrong tls response");
+                }
+            }
+            else if (protocol == Protocol.SOCKS4 && recv_buffer.Length >= 2)
+            {
+                if (recv_buffer[0] == 0 && recv_buffer[1] == 90)
+                {
+                    Finish();
+                    return;
+                }
+                else
+                {
+                    throw new ProtocolException("Wrong socks response");
+                }
+            }
+            else if (protocol == Protocol.SOCKS5 && recv_buffer.Length >= 2)
+            {
+                if (recv_buffer[0] == 5 && (recv_buffer[1] == 0 || recv_buffer[1] == 2))
+                {
+                    Finish();
+                    return;
+                }
+                else
+                {
+                    throw new ProtocolException("Wrong socks5 response");
+                }
+            }
+        }
+
+        protected void Finish()
+        {
+            send_buffer = null;
+            recv_buffer = null;
+            protocol = Protocol.UNKONWN;
+            Pass = true;
+        }
+    }
+
     class Handler
     {
         public delegate Server GetCurrentServer(bool usingRandom = false, bool forceRandom = false);
@@ -237,12 +382,14 @@ namespace Shadowsocks.Controller
         // Reconnect
         public int reconnectTimesRemain = 0;
         protected int reconnectTimes = 0;
+        public bool forceRandom = false;
         // Encryptor
         protected IEncryptor encryptor;
         protected IEncryptor encryptorUDP;
         //
         public IObfs protocol;
         public IObfs obfs;
+        protected ProtocolResponseDetector detector = new ProtocolResponseDetector();
         // remote socket.
         protected Socket remote;
         protected Socket remoteUDP;
@@ -273,7 +420,7 @@ namespace Shadowsocks.Controller
         // connection send buffer
         protected byte[] connetionSendBuffer = new byte[BufferSize * 4];
         // connection send buffer
-        protected List<byte[]> connetionSendBufferList = new List<byte[]>();
+        protected List<byte[]> connectionSendBufferList = new List<byte[]>();
 
         protected byte[] remoteUDPRecvBuffer = new byte[RecvSize * 4];
         protected int remoteUDPRecvBufferLength = 0;
@@ -369,19 +516,26 @@ namespace Shadowsocks.Controller
             {
                 if (connection != null)
                 {
-                    if (lastErrCode == 0)
+                    //if (lastErrCode == 0)
+                    //{
+                    //    lastErrCode = 8;
+                    //    if (speedTester.sizeDownload == 0)
+                    //    {
+                    //        server.ServerSpeedLog().AddTimeoutTimes();
+                    //        if (server.ServerSpeedLog().ErrorContinurousTimes >= AutoSwitchOffErrorTimes && autoSwitchOff)
+                    //        {
+                    //            server.setEnable(false);
+                    //        }
+                    //    }
+                    //}
+                    if (remote != null && (State == ConnectState.CONNECTED))
                     {
-                        lastErrCode = 8;
-                        if (speedTester.sizeDownload == 0)
-                        {
-                            server.ServerSpeedLog().AddTimeoutTimes();
-                            if (server.ServerSpeedLog().ErrorContinurousTimes >= AutoSwitchOffErrorTimes && autoSwitchOff)
-                            {
-                                server.setEnable(false);
-                            }
-                        }
+                        remote.Shutdown(SocketShutdown.Both);
                     }
-                    connection.Shutdown(SocketShutdown.Both);
+                    else
+                    {
+                        connection.Shutdown(SocketShutdown.Both);
+                    }
                 }
             }
             catch (Exception)
@@ -399,7 +553,23 @@ namespace Shadowsocks.Controller
                 if (lastErrCode == 0)
                 {
                     lastErrCode = 16;
-                    server.ServerSpeedLog().AddErrorEncryptTimes();
+                    server.ServerSpeedLog().AddErrorDecodeTimes();
+                    if (server.ServerSpeedLog().ErrorEncryptTimes >= 2
+                        && server.ServerSpeedLog().ErrorContinurousTimes >= AutoSwitchOffErrorTimes
+                        && autoSwitchOff)
+                    {
+                        server.setEnable(false);
+                    }
+                }
+                return 16; // ObfsException(decrypt error)
+            }
+            else if (e is ProtocolException)
+            {
+                ProtocolException pe = (ProtocolException)e;
+                if (lastErrCode == 0)
+                {
+                    lastErrCode = 16;
+                    server.ServerSpeedLog().AddErrorDecodeTimes();
                     if (server.ServerSpeedLog().ErrorEncryptTimes >= 2
                         && server.ServerSpeedLog().ErrorContinurousTimes >= AutoSwitchOffErrorTimes
                         && autoSwitchOff)
@@ -480,16 +650,6 @@ namespace Shadowsocks.Controller
                     if (lastErrCode == 0)
                     {
                         lastErrCode = 8;
-                        if (speedTester.sizeDownload == 0)
-                        {
-                            server.ServerSpeedLog().AddTimeoutTimes();
-                            if (server.ServerSpeedLog().ErrorTimeoutTimes >= 3
-                                && server.ServerSpeedLog().ErrorContinurousTimes >= AutoSwitchOffErrorTimes
-                                && autoSwitchOff)
-                            {
-                                server.setEnable(false);
-                            }
-                        }
                     }
                     return 8; // proxy server no response too slow
                 }
@@ -521,14 +681,7 @@ namespace Shadowsocks.Controller
                 }
             }
 
-            if (reconnectTimes <= reconnectTimesRemain)
-            {
-                server = this.getCurrentServer(true);
-            }
-            else
-            {
-                server = this.getCurrentServer(true, true);
-            }
+            server = this.getCurrentServer(true, forceRandom);
 
             CloseSocket(ref remote);
             CloseSocket(ref remoteUDP);
@@ -560,6 +713,7 @@ namespace Shadowsocks.Controller
 
             speedTester.sizeUpload = 0;
             speedTester.sizeDownload = 0;
+            speedTester.sizeRecv = 0;
 
             lastErrCode = 0;
             Thread.Sleep(100);
@@ -649,8 +803,18 @@ namespace Shadowsocks.Controller
                 else
                 {
                     speedTester.BeginConnect();
-                    remote.BeginConnect(remoteEP,
+                    IAsyncResult result = remote.BeginConnect(remoteEP,
                         new AsyncCallback(ConnectCallback), null);
+                    if (reconnectTimesRemain + reconnectTimes > 0)
+                    {
+                        bool success = result.AsyncWaitHandle.WaitOne((int)(5 * 1000), true);
+                        if (!success)
+                        {
+                            remote.Close();
+                            lastErrCode = 8;
+                            server.ServerSpeedLog().AddTimeoutTimes();
+                        }
+                    }
                 }
             }
         }
@@ -708,18 +872,18 @@ namespace Shadowsocks.Controller
                     return true;
                 }
             }
-            //else if (this.State == ConnectState.CONNECTED)
-            //{
-            //    if ( obfs.getSentLength() == 0 && connetionSendBufferList != null )
-            //    {
-            //        if (reconnectTimesRemain > 0)
-            //        {
-            //            this.State = ConnectState.CONNECTING;
-            //            this.ReConnect();
-            //            return true;
-            //        }
-            //    }
-            //}
+            else if (this.State == ConnectState.CONNECTED)
+            {
+                if (obfs.getSentLength() == 0 && connectionSendBufferList != null)
+                {
+                    if (reconnectTimesRemain > 0)
+                    {
+                        this.State = ConnectState.CONNECTING;
+                        this.ReConnect();
+                        return true;
+                    }
+                }
+            }
             return false;
         }
 
@@ -748,6 +912,13 @@ namespace Shadowsocks.Controller
                     return;
                 }
                 closed = true;
+            }
+            if (lastErrCode == 0)
+            {
+                if (speedTester.sizeRecv == 0 && speedTester.sizeUpload > 0)
+                    server.ServerSpeedLog().AddErrorEmptyTimes();
+                else
+                    server.ServerSpeedLog().AddNoErrorTimes();
             }
             try
             {
@@ -1699,7 +1870,7 @@ namespace Shadowsocks.Controller
 
         private void SetObfsPlugin()
         {
-            if (remote != null)
+            //if (remote != null)
             {
                 lock (obfsLock)
                 {
@@ -1721,7 +1892,15 @@ namespace Shadowsocks.Controller
                 {
                     //Console.WriteLine(e);
                 }
-                int head_len = ObfsBase.GetHeadSize(remoteHeaderSendBuffer, 30);
+                int head_len;
+                if (connectionSendBufferList != null && connectionSendBufferList.Count > 0)
+                {
+                    head_len = ObfsBase.GetHeadSize(connectionSendBufferList[0], 30);
+                }
+                else
+                {
+                    head_len = ObfsBase.GetHeadSize(remoteHeaderSendBuffer, 30);
+                }
                 if (remoteTCPEndPoint != null)
                 {
                     try
@@ -1784,9 +1963,9 @@ namespace Shadowsocks.Controller
                     {
                         doRemoteTDPRecv();
                     }
-                    else if (connetionSendBufferList != null && connetionSendBufferList.Count > 0)
+                    else if (connectionSendBufferList != null && connectionSendBufferList.Count > 0)
                     {
-                        foreach (byte[] buffer in connetionSendBufferList)
+                        foreach (byte[] buffer in connectionSendBufferList)
                         {
                             if (server.tcp_over_udp &&
                                     remoteTDP != null)
@@ -1801,7 +1980,14 @@ namespace Shadowsocks.Controller
                     }
                     else if (httpProxyState != null)
                     {
+                        detector.OnSend(remoteHeaderSendBuffer, remoteHeaderSendBuffer.Length);
                         RemoteSend(remoteHeaderSendBuffer, remoteHeaderSendBuffer.Length);
+                        if (remoteHeaderSendBuffer != null)
+                        {
+                            byte[] data = new byte[remoteHeaderSendBuffer.Length];
+                            Array.Copy(remoteHeaderSendBuffer, data, data.Length);
+                            connectionSendBufferList.Add(data);
+                        }
                         remoteHeaderSendBuffer = null;
                         httpProxyState = null;
                     }
@@ -1904,6 +2090,12 @@ namespace Shadowsocks.Controller
 
                     if (connectionUDP == null)
                     {
+                        detector.OnRecv(remoteSendBuffer, bytesToSend);
+                        if (detector.Pass)
+                        {
+                            server.ServerSpeedLog().ResetContinurousTimes();
+                        }
+                        speedTester.AddRecvSize(bytesToSend);
                         connection.BeginSend(remoteSendBuffer, 0, bytesToSend, 0, new AsyncCallback(PipeConnectionSendCallback), null);
                     }
                     else
@@ -1936,6 +2128,7 @@ namespace Shadowsocks.Controller
                         {
                             foreach (byte[] buffer in buffer_list)
                             {
+                                speedTester.AddRecvSize(buffer.Length);
                                 connectionUDP.BeginSendTo(buffer, 0, buffer.Length, SocketFlags.None, connectionUDPEndPoint, new AsyncCallback(PipeConnectionUDPSendCallback), null);
                             }
                         }
@@ -1945,10 +2138,6 @@ namespace Shadowsocks.Controller
                 {
                     connection.Shutdown(SocketShutdown.Send);
                     connectionShutdown = true;
-                    if (lastErrCode == 0)
-                    {
-                        lastErrCode = 8;
-                    }
                     CheckClose();
                 }
             }
@@ -1990,6 +2179,7 @@ namespace Shadowsocks.Controller
                         }
                         Array.Copy(remoteRecvBuffer, remoteSendBuffer, bytesToSend);
                     }
+                    speedTester.AddRecvSize(bytesToSend);
                     ConnectionSend(remoteSendBuffer, bytesToSend);
                 }
                 else
@@ -1997,10 +2187,6 @@ namespace Shadowsocks.Controller
                     //Console.WriteLine("bytesRead: " + bytesRead.ToString());
                     connection.Shutdown(SocketShutdown.Send);
                     connectionShutdown = true;
-                    if (lastErrCode == 0)
-                    {
-                        lastErrCode = 8;
-                    }
                     CheckClose();
                 }
             }
@@ -2106,19 +2292,18 @@ namespace Shadowsocks.Controller
                     else
                         Logging.LogBin(LogLevel.Debug, "udp remote recv", remoteSendBuffer, bytesToSend);
 
+                    speedTester.AddRecvSize(bytesToSend);
+                    int obfsSendSize;
+                    byte[] obfsBuffer = this.protocol.ClientUdpPostDecrypt(remoteSendBuffer, bytesToSend, out obfsSendSize);
                     if (connectionUDP == null)
-                        connection.BeginSend(remoteSendBuffer, 0, bytesToSend, 0, new AsyncCallback(PipeConnectionSendCallback), null);
+                        connection.BeginSend(obfsBuffer, 0, obfsSendSize, 0, new AsyncCallback(PipeConnectionSendCallback), null);
                     else
-                        connectionUDP.BeginSendTo(remoteSendBuffer, 0, bytesToSend, SocketFlags.None, connectionUDPEndPoint, new AsyncCallback(PipeConnectionUDPSendCallback), null);
+                        connectionUDP.BeginSendTo(remoteSendBuffer, 0, obfsSendSize, SocketFlags.None, connectionUDPEndPoint, new AsyncCallback(PipeConnectionUDPSendCallback), null);
                 }
                 else
                 {
                     connection.Shutdown(SocketShutdown.Send);
                     connectionShutdown = true;
-                    if (lastErrCode == 0)
-                    {
-                        lastErrCode = 8;
-                    }
                     CheckClose();
                 }
             }
@@ -2148,10 +2333,10 @@ namespace Shadowsocks.Controller
                 }
             }
             int obfsSendSize;
-            byte[] connetionSendObfsBuffer = this.obfs.ClientEncode(connetionSendBuffer, bytesToSend, out obfsSendSize);
+            byte[] obfsBuffer = this.obfs.ClientEncode(connetionSendBuffer, bytesToSend, out obfsSendSize);
             server.ServerSpeedLog().AddUploadBytes(obfsSendSize);
             speedTester.AddUploadSize(obfsSendSize);
-            remote.BeginSend(connetionSendObfsBuffer, 0, obfsSendSize, 0, new AsyncCallback(PipeRemoteSendCallback), null);
+            remote.BeginSend(obfsBuffer, 0, obfsSendSize, 0, new AsyncCallback(PipeRemoteSendCallback), null);
         }
 
         private void RemoteTDPSend(byte[] bytes, int length)
@@ -2161,26 +2346,30 @@ namespace Shadowsocks.Controller
             remoteTDP.BeginSendTo(bytes, length, new AsyncCallback(PipeRemoteTDPSendCallback), null);
         }
 
-        private void RemoteSendto(byte[] bytes, int length, bool obfs, int obfs_max = 40)
+        private void RemoteSendto(byte[] bytes, int length)
         {
             int bytesToSend;
             byte[] bytesToEncrypt = null;
             int bytes_beg = 3;
             length -= bytes_beg;
-            if (socks5RemotePort > 0) //ignore obfs, TODO: need test
-            {
-                bytesToEncrypt = new byte[length];
-                Array.Copy(bytes, bytes_beg, bytesToEncrypt, 0, length);
-                lock (encryptionLock)
-                {
-                    if (closed)
-                    {
-                        return;
-                    }
-                    encryptorUDP.Reset();
-                    encryptorUDP.Encrypt(bytesToEncrypt, length, connetionSendBuffer, out bytesToSend);
-                }
 
+            bytesToEncrypt = new byte[length];
+            Array.Copy(bytes, bytes_beg, bytesToEncrypt, 0, length);
+            lock (encryptionLock)
+            {
+                if (closed)
+                {
+                    return;
+                }
+                encryptorUDP.Reset();
+                this.protocol.SetServerInfoIV(encryptorUDP.getIV());
+                int obfsSendSize;
+                byte[] obfsBuffer = this.protocol.ClientUdpPreEncrypt(bytesToEncrypt, length, out obfsSendSize);
+                encryptorUDP.Encrypt(obfsBuffer, obfsSendSize, connetionSendBuffer, out bytesToSend);
+            }
+
+            if (this.socks5RemotePort > 0)
+            {
                 IPAddress ipAddress;
                 string serverURI = server.server;
                 int serverPort = server.server_port;
@@ -2221,52 +2410,6 @@ namespace Shadowsocks.Controller
                 bytesToSend = bytesToEncrypt.Length;
                 Array.Copy(bytesToEncrypt, connetionSendBuffer, bytesToSend);
             }
-            else
-            {
-                if (obfs)
-                {
-                    int obfs_len = random.Next(obfs_max + 1);
-                    if (length < 24 + 16 && obfs_len > 0) // DNS: 17 + URI len + 1 + port(2) + ip(4 or 16)
-                    {
-                        if (obfs_len == 1)
-                        {
-                            bytesToEncrypt = new byte[length + 1];
-                            Array.Copy(bytes, bytes_beg, bytesToEncrypt, 1, length);
-                            bytesToEncrypt[0] = 0x81;
-                            length += 1;
-                        }
-                        else
-                        {
-                            int len = obfs_len - 2;
-                            bytesToEncrypt = new byte[length + len + 2];
-                            Array.Copy(bytes, bytes_beg, bytesToEncrypt, len + 2, length);
-                            bytesToEncrypt[0] = 0x80;
-                            bytesToEncrypt[1] = (byte)len;
-                            length += len + 2;
-                        }
-                    }
-                    else
-                    {
-                        bytesToEncrypt = new byte[length];
-                        Array.Copy(bytes, bytes_beg, bytesToEncrypt, 0, length);
-                    }
-                }
-                else
-                {
-                    bytesToEncrypt = new byte[length];
-                    Array.Copy(bytes, 3, bytesToEncrypt, 0, length);
-                }
-                Logging.LogBin(LogLevel.Debug, "remote sendto", bytesToEncrypt, length);
-                lock (encryptionLock)
-                {
-                    if (closed)
-                    {
-                        return;
-                    }
-                    encryptorUDP.Reset();
-                    encryptorUDP.Encrypt(bytesToEncrypt, length, connetionSendBuffer, out bytesToSend);
-                }
-            }
             server.ServerSpeedLog().AddUploadBytes(bytesToSend);
             speedTester.AddUploadSize(bytesToSend);
             remoteUDP.BeginSendTo(connetionSendBuffer, 0, bytesToSend, 0, remoteUDPEndPoint, new AsyncCallback(PipeRemoteUDPSendCallback), null);
@@ -2298,13 +2441,14 @@ namespace Shadowsocks.Controller
                     }
                     if (obfs != null && obfs.getSentLength() > 0)
                     {
-                        connetionSendBufferList = null;
+                        connectionSendBufferList = null;
                     }
-                    else if (connetionSendBufferList != null)
+                    else if (connectionSendBufferList != null)
                     {
+                        detector.OnSend(connetionRecvBuffer, bytesRead);
                         byte[] data = new byte[bytesRead];
                         Array.Copy(connetionRecvBuffer, data, data.Length);
-                        connetionSendBufferList.Add(data);
+                        connectionSendBufferList.Add(data);
                     }
                     if (closed || State != ConnectState.CONNECTED)
                     {
@@ -2318,11 +2462,6 @@ namespace Shadowsocks.Controller
                     else
                     {
                         RemoteSend(connetionRecvBuffer, bytesRead);
-                    }
-
-                    if (speedTester.sizeDownload > 0)
-                    {
-                        server.ServerSpeedLog().ResetContinurousTimes();
                     }
                 }
                 else
@@ -2369,7 +2508,7 @@ namespace Shadowsocks.Controller
                     Logging.LogBin(LogLevel.Debug, "udp remote send", connetionRecvBuffer, bytesRead);
                     if (!server.udp_over_tcp && remoteUDP != null)
                     {
-                        RemoteSendto(connetionSendBuffer, bytesRead, server.obfs_udp);
+                        RemoteSendto(connetionSendBuffer, bytesRead);
                     }
                     else
                     {
@@ -2378,11 +2517,6 @@ namespace Shadowsocks.Controller
                             connetionSendBuffer[0] = (byte)(bytesRead >> 8);
                             connetionSendBuffer[1] = (byte)(bytesRead);
                             RemoteSend(connetionSendBuffer, bytesRead);
-
-                            if (speedTester.sizeDownload > 0)
-                            {
-                                server.ServerSpeedLog().ResetContinurousTimes();
-                            }
                         }
                     }
                 }

@@ -179,21 +179,37 @@ namespace Shadowsocks.Obfs
                     Array.Copy(encryptdata, 0, headdata, 0, headdata.Length);
                     int request_path_index = new Random().Next(_request_path.Length / 2) * 2;
                     string host = Server.host;
+                    string custom_head = "";
                     if (Server.param.Length > 0)
                     {
-                        string[] hosts = Server.param.Split(',');
+                        string[] custom_heads = Server.param.Split(new char[] { '#' }, 2);
+                        string param = Server.param;
+                        if (custom_heads.Length > 1)
+                        {
+                            custom_head = custom_heads[1];
+                            param = custom_heads[0];
+                        }
+                        string[] hosts = param.Split(',');
                         host = hosts[random.Next(hosts.Length)];
                     }
                     string http_buf =
                         "GET /" + _request_path[request_path_index] + data2urlencode(headdata, headdata.Length) + _request_path[request_path_index + 1] + " HTTP/1.1\r\n"
-                        + "Host: " + host + (Server.port == 80 ? "" : ":" + Server.port.ToString()) + "\r\n"
-                        + "User-Agent: " + _request_useragent[_useragent_index] + "\r\n"
+                        + "Host: " + host + (Server.port == 80 ? "" : ":" + Server.port.ToString()) + "\r\n";
+                    if (custom_head.Length > 0)
+                    {
+                        http_buf += custom_head.Replace("\\n", "\r\n") + "\r\n\r\n";
+                    }
+                    else
+                    {
+                        http_buf +=
+                        "User-Agent: " + _request_useragent[_useragent_index] + "\r\n"
                         + "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
                         + "Accept-Language: en-US,en;q=0.8\r\n"
                         + "Accept-Encoding: gzip, deflate\r\n"
                         + "DNT: 1\r\n"
                         + "Connection: keep-alive\r\n"
                         + "\r\n";
+                    }
                     for (int i = 0; i < http_buf.Length; ++i)
                     {
                         outdata[i] = (byte)http_buf[i];
@@ -359,12 +375,13 @@ namespace Shadowsocks.Obfs
                 g_random.GetBytes(randomdata);
                 randomdata.CopyTo(outdata, 4);
             }
-            lock ((TlsAuthData)this.Server.data)
+            TlsAuthData authData = (TlsAuthData)this.Server.data;
+            lock (authData)
             {
-                if (((TlsAuthData)this.Server.data).clientID == null)
+                if (authData.clientID == null)
                 {
-                    ((TlsAuthData)this.Server.data).clientID = new byte[32];
-                    g_random.GetBytes(((TlsAuthData)this.Server.data).clientID);
+                    authData.clientID = new byte[32];
+                    g_random.GetBytes(authData.clientID);
                 }
             }
             UInt64 utc_time_second = (UInt64)Math.Floor(DateTime.UtcNow.Subtract(new DateTime(1970, 1, 1, 0, 0, 0)).TotalSeconds);
@@ -397,13 +414,13 @@ namespace Shadowsocks.Obfs
                 else
                 {
                     {
-                        byte[] hmac_data = new byte[44];
+                        byte[] hmac_data = new byte[43];
                         byte[] rnd = new byte[22];
                         random.NextBytes(rnd);
 
-                        byte[] handshake_finish = System.Text.Encoding.ASCII.GetBytes("\x14\x03\x01\x00\x01\x01" + "\x16\x03\x01\x00\x01\x20");
+                        byte[] handshake_finish = System.Text.Encoding.ASCII.GetBytes("\x14\x03\x01\x00\x01\x01" + "\x16\x03\x01\x00\x20");
                         handshake_finish.CopyTo(hmac_data, 0);
-                        rnd.CopyTo(hmac_data, 12);
+                        rnd.CopyTo(hmac_data, handshake_finish.Length);
 
                         hmac_sha1(hmac_data, hmac_data.Length);
 

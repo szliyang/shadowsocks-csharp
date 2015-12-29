@@ -139,6 +139,7 @@
     <Compile Include="Encryption\EncryptorBase.cs" />
     <Compile Include="Encryption\EncryptorFactory.cs" />
     <Compile Include="Encryption\IVEncryptor.cs" />
+    <Compile Include="Encryption\MbedTLS.cs" />
     <Compile Include="Encryption\PolarSSL.cs" />
     <Compile Include="Encryption\PolarSSLEncryptor.cs" />
     <Compile Include="Encryption\Sodium.cs" />
@@ -147,6 +148,7 @@
     <Compile Include="Controller\PACServer.cs" />
     <Compile Include="Model\Server.cs" />
     <Compile Include="Model\Configuration.cs" />
+    <Compile Include="Model\ServerSpeedLog.cs" />
     <Compile Include="Obfs\Auth.cs" />
     <Compile Include="Obfs\HttpSimpleObfs.cs" />
     <Compile Include="Obfs\IObfs.cs" />
